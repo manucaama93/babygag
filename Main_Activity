@@ -1,0 +1,76 @@
+package com.manucaama.babygagphone
+
+import android.annotation.SuppressLint
+import android.os.Bundle
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
+import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.RecyclerView
+import androidx.viewpager2.widget.ViewPager2
+import kotlin.math.abs
+
+class MainActivity : AppCompatActivity() {
+
+    private var startY = 0f
+    private var startX = 0f
+
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        val imagenesBebe = listOf(
+            R.drawable.bebe_negro,
+            R.drawable.bebe_blanco
+        )
+
+        val viewPager = findViewById<ViewPager2>(R.id.viewPagerBebe)
+        val mosaicView = findViewById<MosaicCanvasView>(R.id.mosaicView)
+        val galleryUiOverlay = findViewById<View>(R.id.galleryUiOverlay)
+
+        viewPager.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+                val imageView = ImageView(parent.context).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }
+                return object : RecyclerView.ViewHolder(imageView) {}
+            }
+
+            override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+                (holder.itemView as ImageView).setImageResource(imagenesBebe[position])
+            }
+
+            override fun getItemCount(): Int = imagenesBebe.size
+        }
+
+        val viewPagerChild = viewPager.getChildAt(0)
+        viewPagerChild?.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    startY = event.rawY
+                    startX = event.rawX
+                }
+                MotionEvent.ACTION_UP -> {
+                    val diffY = event.rawY - startY
+                    val diffX = event.rawX - startX
+
+                    if (diffY > 100 && abs(diffY) > abs(diffX)) {
+                        viewPager.visibility = View.GONE
+                        mosaicView.visibility = View.VISIBLE
+                        galleryUiOverlay.visibility = View.VISIBLE
+                        return@setOnTouchListener true
+                    }
+                }
+            }
+            false
+        }
+
+        viewPager.setCurrentItem(1, false)
+    }
+}
