@@ -1,0 +1,241 @@
+package com.manucaama.babygagphone
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.RectF
+import android.util.AttributeSet
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
+import android.view.View
+
+class MosaicCanvasView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = 0
+) : View(context, attrs, defStyleAttr),
+    ScaleGestureDetector.OnScaleGestureListener,
+    GestureDetector.OnGestureListener {
+
+    private val totalCols = 30
+    private val totalRows = 60
+    private val totalItems = totalCols * totalRows
+
+    private val centerRow = totalRows / 2
+    private val centerCol = (totalCols / 2) - 1
+
+    private val bebeNegroIndex = centerRow * totalCols + centerCol
+    private val bebeBlancoIndex = centerRow * totalCols + (centerCol + 1)
+
+    private val matrix = Matrix()
+    private val matrixValues = FloatArray(9)
+    private var scaleFactor = 1.0f
+    private var minScale = 1.0f
+    private var maxScale = 10.0f
+
+    private val scaleDetector = ScaleGestureDetector(context, this)
+    private val gestureDetector = GestureDetector(context, this)
+
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val dstRect = RectF()
+    private val srcRect = Rect()
+
+    private val bitmapBebeNegro: Bitmap? = BitmapFactory.decodeResource(resources, R.drawable.bebe_negro)
+    private val bitmapBebeBlanco: Bitmap? = BitmapFactory.decodeResource(resources, R.drawable.bebe_blanco)
+
+    private var initialSetupDone = false
+
+    init {
+        setLayerType(LAYER_TYPE_HARDWARE, null)
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.action == MotionEvent.ACTION_UP) {
+            performClick()
+        }
+        var handled = scaleDetector.onTouchEvent(event)
+        handled = gestureDetector.onTouchEvent(event) || handled
+        return handled || super.onTouchEvent(event)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (!initialSetupDone && w > 0 && h > 0) {
+            setupInitialFocusOnCenter()
+            initialSetupDone = true
+        }
+    }
+
+    private fun setupInitialFocusOnCenter() {
+        val baseCellWidth = width / totalCols.toFloat()
+        val cellWidthNear = width / 3f
+
+        minScale = 1.0f
+        maxScale = cellWidthNear / baseCellWidth
+
+        scaleFactor = maxScale
+        matrix.reset()
+
+        matrix.postScale(scaleFactor, scaleFactor, 0f, 0f)
+
+        // Centrado horizontal exacto para los bebés
+        val translateX = (width / 2f) - ((centerCol + 0.5f) * baseCellWidth * scaleFactor)
+
+        val bottomMarginPx = 84f * resources.displayMetrics.density
+        val centerCellTopScaled = (centerRow * baseCellWidth) * scaleFactor
+        val targetYInScreen = height - bottomMarginPx - cellWidthNear
+        val translateY = targetYInScreen - centerCellTopScaled
+
+        matrix.postTranslate(translateX, translateY)
+        clampMatrixBounds()
+        invalidate()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        canvas.save()
+        canvas.concat(matrix)
+
+        canvas.drawColor(Color.WHITE)
+
+        val fixedScreenGapPx = 2.5f
+        val effectiveGap = fixedScreenGapPx / scaleFactor
+        val baseCellWidth = width / totalCols.toFloat()
+
+        for (i in 0 until totalItems) {
+            val row = i / totalCols
+            val col = i % totalCols
+
+            val left = col * baseCellWidth + (effectiveGap / 2f)
+            val top = row * baseCellWidth + (effectiveGap / 2f)
+            val right = (col + 1) * baseCellWidth - (effectiveGap / 2f)
+            val bottom = (row + 1) * baseCellWidth - (effectiveGap / 2f)
+
+            dstRect.set(left, top, right, bottom)
+
+            when (i) {
+                bebeNegroIndex -> {
+                    if (bitmapBebeNegro != null) {
+                        drawBitmapCenterCrop(canvas, bitmapBebeNegro, dstRect)
+                    } else {
+                        paint.color = Color.BLACK
+                        canvas.drawRect(dstRect, paint)
+                    }
+                }
+                bebeBlancoIndex -> {
+                    if (bitmapBebeBlanco != null) {
+                        drawBitmapCenterCrop(canvas, bitmapBebeBlanco, dstRect)
+                    } else {
+                        paint.color = Color.GRAY
+                        canvas.drawRect(dstRect, paint)
+                    }
+                }
+                else -> {
+                    val r = ((row * 13 + col * 7) * 31) % 200 + 40
+                    val g = ((row * 5 + col * 17) * 19) % 200 + 40
+                    val b = ((row * 23 + col * 3) * 11) % 200 + 40
+                    paint.color = Color.rgb(r, g, b)
+                    canvas.drawRect(dstRect, paint)
+                }
+            }
+        }
+
+        canvas.restore()
+    }
+
+    private fun drawBitmapCenterCrop(canvas: Canvas, bitmap: Bitmap, dst: RectF) {
+        val bw = bitmap.width
+        val bh = bitmap.height
+
+        val srcLeft: Int
+        val srcTop: Int
+        val srcRight: Int
+        val srcBottom: Int
+
+        if (bw > bh) {
+            srcLeft = (bw - bh) / 2
+            srcTop = 0
+            srcRight = srcLeft + bh
+            srcBottom = bh
+        } else {
+            srcLeft = 0
+            srcTop = (bh - bw) / 2
+            srcRight = bw
+            srcBottom = srcTop + bw
+        }
+
+        srcRect.set(srcLeft, srcTop, srcRight, srcBottom)
+        canvas.drawBitmap(bitmap, srcRect, dst, paint)
+    }
+
+    private fun clampMatrixBounds() {
+        matrix.getValues(matrixValues)
+        val currentScale = matrixValues[Matrix.MSCALE_X]
+        val transY = matrixValues[Matrix.MTRANS_Y]
+
+        val bottomMarginPx = 84f * resources.displayMetrics.density
+        val baseCellWidth = width / totalCols.toFloat()
+        val totalGridHeight = (totalRows * baseCellWidth) * currentScale
+        val availableHeight = height - bottomMarginPx
+
+        // CENTRADO HORIZONTAL DINÁMICO: Mantiene los bebés siempre en el centro horizontal de la pantalla
+        val clampedX = (width / 2f) - ((centerCol + 0.5f) * baseCellWidth * currentScale)
+
+        // Límites normales para el eje vertical (arriba / abajo)
+        val clampedY = if (totalGridHeight <= availableHeight) {
+            0f
+        } else {
+            val minTransY = availableHeight - totalGridHeight
+            val maxTransY = 0f
+            transY.coerceIn(minTransY, maxTransY)
+        }
+
+        matrixValues[Matrix.MTRANS_X] = clampedX
+        matrixValues[Matrix.MTRANS_Y] = clampedY
+        matrix.setValues(matrixValues)
+    }
+
+    override fun onScale(detector: ScaleGestureDetector): Boolean {
+        val oldScale = scaleFactor
+        scaleFactor *= detector.scaleFactor
+        scaleFactor = scaleFactor.coerceIn(minScale, maxScale)
+
+        if (oldScale != 0f) {
+            val factor = scaleFactor / oldScale
+            matrix.postScale(factor, factor, detector.focusX, detector.focusY)
+            clampMatrixBounds()
+            invalidate()
+        }
+        return true
+    }
+
+    override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dX: Float, dY: Float): Boolean {
+        // CERO MOVIMIENTO HORIZONTAL AL ARRASTRAR (el eje X lo gestiona enteramente clampMatrixBounds centrado)
+        val filteredDX = 0f
+        val filteredDY = dY
+
+        matrix.postTranslate(-filteredDX, -filteredDY)
+        clampMatrixBounds()
+        invalidate()
+        return true
+    }
+
+    override fun onScaleBegin(detector: ScaleGestureDetector): Boolean = true
+    override fun onScaleEnd(detector: ScaleGestureDetector) {}
+    override fun onDown(e: MotionEvent): Boolean = true
+    override fun onShowPress(e: MotionEvent) {}
+    override fun onSingleTapUp(e: MotionEvent): Boolean = false
+    override fun onLongPress(e: MotionEvent) {}
+    override fun onFling(e1: MotionEvent?, e2: MotionEvent, vX: Float, vY: Float): Boolean = false
+}
