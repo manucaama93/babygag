@@ -49,6 +49,8 @@ class MosaicCanvasView @JvmOverloads constructor(
     private val gestureDetector = GestureDetector(context, this)
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val overlayPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
     private val dstRect = RectF()
     private val srcRect = Rect()
 
@@ -58,8 +60,9 @@ class MosaicCanvasView @JvmOverloads constructor(
     // Lista procesada con las fotos de la galería y sus colores medios
     private val processedMosaicPhotos = mutableListOf<MosaicPhoto>()
 
-    // Array que guarda qué índice de la galería va en cada celda del mosaico
+    // Arrays para guardar el índice de la foto y el color objetivo de cada celda
     private val cellPhotoIndices = IntArray(totalItems)
+    private val cellTargetColors = IntArray(totalItems)
 
     private var initialSetupDone = false
 
@@ -99,7 +102,7 @@ class MosaicCanvasView @JvmOverloads constructor(
                 processedMosaicPhotos.clear()
                 processedMosaicPhotos.addAll(processedList)
 
-                // 3. Generar el fotomosaico real imitando a la imagen objetivo 'famoso_1'
+                // 3. Generar el fotomosaico real imitando a 'famoso_1'
                 if (processedMosaicPhotos.isNotEmpty()) {
                     val bitmapObjetivo = BitmapFactory.decodeResource(resources, R.drawable.famoso_1)
                     if (bitmapObjetivo != null) {
@@ -110,15 +113,12 @@ class MosaicCanvasView @JvmOverloads constructor(
         }
     }
 
-    /**
-     * FUNCIÓN CLAVE: Recibe una imagen principal, la divide en la cuadrícula 30x60
-     * y calcula el fotomosaico real cruzando los colores con el MosaicEngine.
-     */
     fun generateTrueMosaic(targetBitmap: Bitmap) {
         if (processedMosaicPhotos.isEmpty()) return
 
         viewScope.launch {
             val newIndices = IntArray(totalItems)
+            val newColors = IntArray(totalItems)
             val tw = targetBitmap.width
             val th = targetBitmap.height
 
@@ -126,13 +126,11 @@ class MosaicCanvasView @JvmOverloads constructor(
                 val row = i / totalCols
                 val col = i % totalCols
 
-                // Calcular las coordenadas del trozo en la imagen objetivo
                 val startX = (col * tw) / totalCols
                 val endX = ((col + 1) * tw) / totalCols
                 val startY = (row * th) / totalRows
                 val endY = ((row + 1) * th) / totalRows
 
-                // Calcular el color RGB promedio de este trozo específico
                 var rSum = 0
                 var gSum = 0
                 var bSum = 0
@@ -157,17 +155,18 @@ class MosaicCanvasView @JvmOverloads constructor(
                 val cellG = if (count > 0) gSum / count else 0
                 val cellB = if (count > 0) bSum / count else 0
 
-                // Buscar la mejor foto de nuestra galería que encaje con este color
+                newColors[i] = Color.rgb(cellR, cellG, cellB)
+
                 val bestMatchPhoto = mosaicEngine.findBestMatchingPhoto(cellR, cellG, cellB, processedMosaicPhotos)
                 val bestIndex = processedMosaicPhotos.indexOf(bestMatchPhoto)
 
                 newIndices[i] = if (bestIndex != -1) bestIndex else 0
             }
 
-            // Actualizar la vista en el hilo principal
             withContext(Dispatchers.Main) {
                 System.arraycopy(newIndices, 0, cellPhotoIndices, 0, totalItems)
-                invalidate() // Redibuja el Canvas con el verdadero mosaico por colores
+                System.arraycopy(newColors, 0, cellTargetColors, 0, totalItems)
+                invalidate()
             }
         }
     }
@@ -287,7 +286,13 @@ class MosaicCanvasView @JvmOverloads constructor(
                 else -> {
                     if (processedMosaicPhotos.isNotEmpty()) {
                         val photoIndex = cellPhotoIndices[i]
+                        // 1. Dibujar la miniatura de la galería
                         drawBitmapCenterCrop(canvas, processedMosaicPhotos[photoIndex].bitmap, dstRect)
+
+                        // 2. Aplicar el velo de fusión respetando la transparencia
+                        overlayPaint.color = cellTargetColors[i]
+                        overlayPaint.alpha = 50
+                        canvas.drawRect(dstRect, overlayPaint)
                     } else {
                         paint.color = Color.LTGRAY
                         canvas.drawRect(dstRect, paint)
