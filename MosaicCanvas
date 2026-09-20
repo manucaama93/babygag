@@ -1,6 +1,7 @@
 package com.manucaama.babygagphone
 
 import android.content.Context
+import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -14,6 +15,11 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MosaicCanvasView @JvmOverloads constructor(
     context: Context,
@@ -42,17 +48,155 @@ class MosaicCanvasView @JvmOverloads constructor(
     private val scaleDetector = ScaleGestureDetector(context, this)
     private val gestureDetector = GestureDetector(context, this)
 
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val dstRect = RectF()
     private val srcRect = Rect()
 
     private val bitmapBebeNegro: Bitmap? = BitmapFactory.decodeResource(resources, R.drawable.bebe_negro)
     private val bitmapBebeBlanco: Bitmap? = BitmapFactory.decodeResource(resources, R.drawable.bebe_blanco)
 
+    // Lista procesada con las fotos de la galería y sus colores medios
+    private val processedMosaicPhotos = mutableListOf<MosaicPhoto>()
+
+    // Array que guarda qué índice de la galería va en cada celda del mosaico
+    private val cellPhotoIndices = IntArray(totalItems)
+
     private var initialSetupDone = false
+
+    // Ámbito de corrutinas para esta Vista
+    private val viewScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val mosaicEngine = MosaicEngine()
 
     init {
         setLayerType(LAYER_TYPE_HARDWARE, null)
+        loadGalleryAndBuildMosaic()
+    }
+
+    private fun loadGalleryAndBuildMosaic() {
+        viewScope.launch {
+            val rawBitmaps = mutableListOf<Bitmap>()
+            var i = 1
+
+            // 1. Cargar las imágenes dinámicamente desde res/drawable
+            while (true) {
+                val resId = context.resources.getIdentifier("imagen_$i", "drawable", context.packageName)
+                if (resId == 0) break
+
+                val bmp = decodeSampledBitmapFromResource(resources, resId, 120, 120)
+                if (bmp != null) {
+                    rawBitmaps.add(bmp)
+                }
+                i++
+            }
+
+            // 2. Preprocesar los colores medios de la galería
+            val processedList = rawBitmaps.map { bmp ->
+                val (r, g, b) = mosaicEngine.calculateAverageColor(bmp)
+                MosaicPhoto(bitmap = bmp, averageRed = r, averageGreen = g, averageBlue = b)
+            }
+
+            withContext(Dispatchers.Main) {
+                processedMosaicPhotos.clear()
+                processedMosaicPhotos.addAll(processedList)
+
+                // 3. Generar el fotomosaico real imitando a la imagen objetivo 'famoso_1'
+                if (processedMosaicPhotos.isNotEmpty()) {
+                    val bitmapObjetivo = BitmapFactory.decodeResource(resources, R.drawable.famoso_1)
+                    if (bitmapObjetivo != null) {
+                        generateTrueMosaic(bitmapObjetivo)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * FUNCIÓN CLAVE: Recibe una imagen principal, la divide en la cuadrícula 30x60
+     * y calcula el fotomosaico real cruzando los colores con el MosaicEngine.
+     */
+    fun generateTrueMosaic(targetBitmap: Bitmap) {
+        if (processedMosaicPhotos.isEmpty()) return
+
+        viewScope.launch {
+            val newIndices = IntArray(totalItems)
+            val tw = targetBitmap.width
+            val th = targetBitmap.height
+
+            for (i in 0 until totalItems) {
+                val row = i / totalCols
+                val col = i % totalCols
+
+                // Calcular las coordenadas del trozo en la imagen objetivo
+                val startX = (col * tw) / totalCols
+                val endX = ((col + 1) * tw) / totalCols
+                val startY = (row * th) / totalRows
+                val endY = ((row + 1) * th) / totalRows
+
+                // Calcular el color RGB promedio de este trozo específico
+                var rSum = 0
+                var gSum = 0
+                var bSum = 0
+                var count = 0
+
+                val stepX = maxOf(1, (endX - startX) / 8)
+                val stepY = maxOf(1, (endY - startY) / 8)
+
+                for (x in startX until endX step stepX) {
+                    for (y in startY until endY step stepY) {
+                        if (x < tw && y < th) {
+                            val pixel = targetBitmap.getPixel(x, y)
+                            rSum += Color.red(pixel)
+                            gSum += Color.green(pixel)
+                            bSum += Color.blue(pixel)
+                            count++
+                        }
+                    }
+                }
+
+                val cellR = if (count > 0) rSum / count else 0
+                val cellG = if (count > 0) gSum / count else 0
+                val cellB = if (count > 0) bSum / count else 0
+
+                // Buscar la mejor foto de nuestra galería que encaje con este color
+                val bestMatchPhoto = mosaicEngine.findBestMatchingPhoto(cellR, cellG, cellB, processedMosaicPhotos)
+                val bestIndex = processedMosaicPhotos.indexOf(bestMatchPhoto)
+
+                newIndices[i] = if (bestIndex != -1) bestIndex else 0
+            }
+
+            // Actualizar la vista en el hilo principal
+            withContext(Dispatchers.Main) {
+                System.arraycopy(newIndices, 0, cellPhotoIndices, 0, totalItems)
+                invalidate() // Redibuja el Canvas con el verdadero mosaico por colores
+            }
+        }
+    }
+
+    private fun decodeSampledBitmapFromResource(res: Resources, resId: Int, reqWidth: Int, reqHeight: Int): Bitmap {
+        return BitmapFactory.Options().run {
+            inJustDecodeBounds = true
+            BitmapFactory.decodeResource(res, resId, this)
+
+            inSampleSize = calculateInSampleSize(this, reqWidth, reqHeight)
+
+            inJustDecodeBounds = false
+            inPreferredConfig = Bitmap.Config.RGB_565
+            BitmapFactory.decodeResource(res, resId, this)
+        }
+    }
+
+    private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
+        val (height: Int, width: Int) = options.outHeight to options.outWidth
+        var inSampleSize = 1
+
+        if (height > reqHeight || width > reqWidth) {
+            val halfHeight: Int = height / 2
+            val halfWidth: Int = width / 2
+            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
+                inSampleSize *= 2
+            }
+        }
+        return inSampleSize
     }
 
     override fun performClick(): Boolean {
@@ -89,7 +233,6 @@ class MosaicCanvasView @JvmOverloads constructor(
 
         matrix.postScale(scaleFactor, scaleFactor, 0f, 0f)
 
-        // Centrado horizontal exacto para los bebés
         val translateX = (width / 2f) - ((centerCol + 0.5f) * baseCellWidth * scaleFactor)
 
         val bottomMarginPx = 84f * resources.displayMetrics.density
@@ -142,11 +285,13 @@ class MosaicCanvasView @JvmOverloads constructor(
                     }
                 }
                 else -> {
-                    val r = ((row * 13 + col * 7) * 31) % 200 + 40
-                    val g = ((row * 5 + col * 17) * 19) % 200 + 40
-                    val b = ((row * 23 + col * 3) * 11) % 200 + 40
-                    paint.color = Color.rgb(r, g, b)
-                    canvas.drawRect(dstRect, paint)
+                    if (processedMosaicPhotos.isNotEmpty()) {
+                        val photoIndex = cellPhotoIndices[i]
+                        drawBitmapCenterCrop(canvas, processedMosaicPhotos[photoIndex].bitmap, dstRect)
+                    } else {
+                        paint.color = Color.LTGRAY
+                        canvas.drawRect(dstRect, paint)
+                    }
                 }
             }
         }
@@ -189,10 +334,8 @@ class MosaicCanvasView @JvmOverloads constructor(
         val totalGridHeight = (totalRows * baseCellWidth) * currentScale
         val availableHeight = height - bottomMarginPx
 
-        // CENTRADO HORIZONTAL DINÁMICO: Mantiene los bebés siempre en el centro horizontal de la pantalla
         val clampedX = (width / 2f) - ((centerCol + 0.5f) * baseCellWidth * currentScale)
 
-        // Límites normales para el eje vertical (arriba / abajo)
         val clampedY = if (totalGridHeight <= availableHeight) {
             0f
         } else {
@@ -221,7 +364,6 @@ class MosaicCanvasView @JvmOverloads constructor(
     }
 
     override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dX: Float, dY: Float): Boolean {
-        // CERO MOVIMIENTO HORIZONTAL AL ARRASTRAR (el eje X lo gestiona enteramente clampMatrixBounds centrado)
         val filteredDX = 0f
         val filteredDY = dY
 
