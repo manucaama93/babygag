@@ -33,11 +33,18 @@ class MosaicCanvasView @JvmOverloads constructor(
     private val totalRows = 60
     private val totalItems = totalCols * totalRows
 
-    private val centerRow = totalRows / 2
+    // Zona inferior de fotos normales (desde la fila 50 hasta el final)
+    private val transitionStartRow = 50
+
     private val centerCol = (totalCols / 2) - 1
 
-    private val bebeNegroIndex = centerRow * totalCols + centerCol
-    private val bebeBlancoIndex = centerRow * totalCols + (centerCol + 1)
+    // Situamos a los bebés en la segunda fila empezando por abajo (totalRows - 2 = fila 58)
+    private val bebeRow = totalRows - 2
+    private val bebeNegroCol = centerCol
+    private val bebeBlancoCol = centerCol + 1
+
+    private val bebeNegroIndex = bebeRow * totalCols + bebeNegroCol
+    private val bebeBlancoIndex = bebeRow * totalCols + bebeBlancoCol
 
     private val matrix = Matrix()
     private val matrixValues = FloatArray(9)
@@ -57,16 +64,13 @@ class MosaicCanvasView @JvmOverloads constructor(
     private val bitmapBebeNegro: Bitmap? = BitmapFactory.decodeResource(resources, R.drawable.bebe_negro)
     private val bitmapBebeBlanco: Bitmap? = BitmapFactory.decodeResource(resources, R.drawable.bebe_blanco)
 
-    // Lista procesada con las fotos de la galería y sus colores medios
     private val processedMosaicPhotos = mutableListOf<MosaicPhoto>()
 
-    // Arrays para guardar el índice de la foto y el color objetivo de cada celda
     private val cellPhotoIndices = IntArray(totalItems)
     private val cellTargetColors = IntArray(totalItems)
 
     private var initialSetupDone = false
 
-    // Ámbito de corrutinas para esta Vista
     private val viewScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val mosaicEngine = MosaicEngine()
 
@@ -80,7 +84,6 @@ class MosaicCanvasView @JvmOverloads constructor(
             val rawBitmaps = mutableListOf<Bitmap>()
             var i = 1
 
-            // 1. Cargar las imágenes dinámicamente desde res/drawable
             while (true) {
                 val resId = context.resources.getIdentifier("imagen_$i", "drawable", context.packageName)
                 if (resId == 0) break
@@ -92,7 +95,6 @@ class MosaicCanvasView @JvmOverloads constructor(
                 i++
             }
 
-            // 2. Preprocesar los colores medios de la galería
             val processedList = rawBitmaps.map { bmp ->
                 val (r, g, b) = mosaicEngine.calculateAverageColor(bmp)
                 MosaicPhoto(bitmap = bmp, averageRed = r, averageGreen = g, averageBlue = b)
@@ -102,7 +104,6 @@ class MosaicCanvasView @JvmOverloads constructor(
                 processedMosaicPhotos.clear()
                 processedMosaicPhotos.addAll(processedList)
 
-                // 3. Generar el fotomosaico real imitando a 'famoso_1'
                 if (processedMosaicPhotos.isNotEmpty()) {
                     val bitmapObjetivo = BitmapFactory.decodeResource(resources, R.drawable.famoso_1)
                     if (bitmapObjetivo != null) {
@@ -121,46 +122,57 @@ class MosaicCanvasView @JvmOverloads constructor(
             val newColors = IntArray(totalItems)
             val tw = targetBitmap.width
             val th = targetBitmap.height
+            val numPhotos = processedMosaicPhotos.size
+
+            // Índice para repartir las fotos de la galería de forma secuencial y sin repetir adyacentes en la zona baja
+            var galleryIndexCounter = 0
 
             for (i in 0 until totalItems) {
                 val row = i / totalCols
                 val col = i % totalCols
 
-                val startX = (col * tw) / totalCols
-                val endX = ((col + 1) * tw) / totalCols
-                val startY = (row * th) / totalRows
-                val endY = ((row + 1) * th) / totalRows
+                if (row >= transitionStartRow) {
+                    // Zona inferior: Asignamos fotos de la galería de forma secuencial sin duplicados consecutivos
+                    newIndices[i] = galleryIndexCounter % numPhotos
+                    galleryIndexCounter++
+                    newColors[i] = Color.TRANSPARENT
+                } else {
+                    // Zona superior: Mosaico clásico basado en la imagen del famoso
+                    val startX = (col * tw) / totalCols
+                    val endX = ((col + 1) * tw) / totalCols
+                    val startY = (row * th) / totalRows
+                    val endY = ((row + 1) * th) / totalRows
 
-                var rSum = 0
-                var gSum = 0
-                var bSum = 0
-                var count = 0
+                    var rSum = 0
+                    var gSum = 0
+                    var bSum = 0
+                    var count = 0
 
-                val stepX = maxOf(1, (endX - startX) / 8)
-                val stepY = maxOf(1, (endY - startY) / 8)
+                    val stepX = maxOf(1, (endX - startX) / 8)
+                    val stepY = maxOf(1, (endY - startY) / 8)
 
-                for (x in startX until endX step stepX) {
-                    for (y in startY until endY step stepY) {
-                        if (x < tw && y < th) {
-                            val pixel = targetBitmap.getPixel(x, y)
-                            rSum += Color.red(pixel)
-                            gSum += Color.green(pixel)
-                            bSum += Color.blue(pixel)
-                            count++
+                    for (x in startX until endX step stepX) {
+                        for (y in startY until endY step stepY) {
+                            if (x < tw && y < th) {
+                                val pixel = targetBitmap.getPixel(x, y)
+                                rSum += Color.red(pixel)
+                                gSum += Color.green(pixel)
+                                bSum += Color.blue(pixel)
+                                count++
+                            }
                         }
                     }
+
+                    val cellR = if (count > 0) rSum / count else 0
+                    val cellG = if (count > 0) gSum / count else 0
+                    val cellB = if (count > 0) bSum / count else 0
+
+                    newColors[i] = Color.rgb(cellR, cellG, cellB)
+
+                    val bestMatchPhoto = mosaicEngine.findBestMatchingPhoto(cellR, cellG, cellB, processedMosaicPhotos)
+                    val bestIndex = processedMosaicPhotos.indexOf(bestMatchPhoto)
+                    newIndices[i] = if (bestIndex != -1) bestIndex else 0
                 }
-
-                val cellR = if (count > 0) rSum / count else 0
-                val cellG = if (count > 0) gSum / count else 0
-                val cellB = if (count > 0) bSum / count else 0
-
-                newColors[i] = Color.rgb(cellR, cellG, cellB)
-
-                val bestMatchPhoto = mosaicEngine.findBestMatchingPhoto(cellR, cellG, cellB, processedMosaicPhotos)
-                val bestIndex = processedMosaicPhotos.indexOf(bestMatchPhoto)
-
-                newIndices[i] = if (bestIndex != -1) bestIndex else 0
             }
 
             withContext(Dispatchers.Main) {
@@ -175,9 +187,7 @@ class MosaicCanvasView @JvmOverloads constructor(
         return BitmapFactory.Options().run {
             inJustDecodeBounds = true
             BitmapFactory.decodeResource(res, resId, this)
-
             inSampleSize = calculateInSampleSize(this, reqWidth, reqHeight)
-
             inJustDecodeBounds = false
             inPreferredConfig = Bitmap.Config.RGB_565
             BitmapFactory.decodeResource(res, resId, this)
@@ -215,14 +225,14 @@ class MosaicCanvasView @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (!initialSetupDone && w > 0 && h > 0) {
-            setupInitialFocusOnCenter()
+            setupInitialFocusOnBottom()
             initialSetupDone = true
         }
     }
 
-    private fun setupInitialFocusOnCenter() {
+    private fun setupInitialFocusOnBottom() {
         val baseCellWidth = width / totalCols.toFloat()
-        val cellWidthNear = width / 3f
+        val cellWidthNear = width / 3f // Vista de 3 columnas en la zona inferior
 
         minScale = 1.0f
         maxScale = cellWidthNear / baseCellWidth
@@ -232,12 +242,12 @@ class MosaicCanvasView @JvmOverloads constructor(
 
         matrix.postScale(scaleFactor, scaleFactor, 0f, 0f)
 
-        val translateX = (width / 2f) - ((centerCol + 0.5f) * baseCellWidth * scaleFactor)
+        val translateX = (width / 2f) - ((bebeNegroCol + 0.5f) * baseCellWidth * scaleFactor)
 
         val bottomMarginPx = 84f * resources.displayMetrics.density
-        val centerCellTopScaled = (centerRow * baseCellWidth) * scaleFactor
+        val targetCellTopScaled = (bebeRow * baseCellWidth) * scaleFactor
         val targetYInScreen = height - bottomMarginPx - cellWidthNear
-        val translateY = targetYInScreen - centerCellTopScaled
+        val translateY = targetYInScreen - targetCellTopScaled
 
         matrix.postTranslate(translateX, translateY)
         clampMatrixBounds()
@@ -286,13 +296,13 @@ class MosaicCanvasView @JvmOverloads constructor(
                 else -> {
                     if (processedMosaicPhotos.isNotEmpty()) {
                         val photoIndex = cellPhotoIndices[i]
-                        // 1. Dibujar la miniatura de la galería
                         drawBitmapCenterCrop(canvas, processedMosaicPhotos[photoIndex].bitmap, dstRect)
 
-                        // 2. Aplicar el velo de fusión respetando la transparencia
-                        overlayPaint.color = cellTargetColors[i]
-                        overlayPaint.alpha = 50
-                        canvas.drawRect(dstRect, overlayPaint)
+                        if (row < transitionStartRow) {
+                            overlayPaint.color = cellTargetColors[i]
+                            overlayPaint.alpha = 50
+                            canvas.drawRect(dstRect, overlayPaint)
+                        }
                     } else {
                         paint.color = Color.LTGRAY
                         canvas.drawRect(dstRect, paint)
@@ -339,7 +349,7 @@ class MosaicCanvasView @JvmOverloads constructor(
         val totalGridHeight = (totalRows * baseCellWidth) * currentScale
         val availableHeight = height - bottomMarginPx
 
-        val clampedX = (width / 2f) - ((centerCol + 0.5f) * baseCellWidth * currentScale)
+        val clampedX = (width / 2f) - ((bebeNegroCol + 0.5f) * baseCellWidth * currentScale)
 
         val clampedY = if (totalGridHeight <= availableHeight) {
             0f
@@ -361,7 +371,7 @@ class MosaicCanvasView @JvmOverloads constructor(
 
         if (oldScale != 0f) {
             val factor = scaleFactor / oldScale
-            matrix.postScale(factor, factor, detector.focusX, detector.focusY)
+            matrix.postScale(factor, factor, width / 2f, height / 2f)
             clampMatrixBounds()
             invalidate()
         }
@@ -369,10 +379,8 @@ class MosaicCanvasView @JvmOverloads constructor(
     }
 
     override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dX: Float, dY: Float): Boolean {
-        val filteredDX = 0f
         val filteredDY = dY
-
-        matrix.postTranslate(-filteredDX, -filteredDY)
+        matrix.postTranslate(0f, -filteredDY)
         clampMatrixBounds()
         invalidate()
         return true
